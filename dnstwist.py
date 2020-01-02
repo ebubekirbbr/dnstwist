@@ -77,6 +77,9 @@ except ImportError:
 	MODULE_REQUESTS = False
 	pass
 
+import tldextract
+from elasticsearch import Elasticsearch, helpers
+
 DIR = path.abspath(path.dirname(sys.argv[0]))
 DIR_DB = 'database'
 FILE_GEOIP = path.join(DIR, DIR_DB, 'GeoIP.dat')
@@ -545,6 +548,7 @@ class DomainThread(threading.Thread):
 		self.option_ssdeep = False
 		self.option_banners = False
 		self.option_mxcheck = False
+		self.es = Elasticsearch([{'host': "10.0.0.182", 'port': "9200", "timeout": 180}])
 
 	def __banner_http(self, ip, vhost):
 		try:
@@ -601,7 +605,7 @@ class DomainThread(threading.Thread):
 	def answer_to_list(answers):
 		return sorted(list(map(lambda record: str(record).strip(".") if len(str(record).split(' ')) == 1 else str(record).split(' ')[1].strip('.'), answers)))
 
-	def run(self):
+	def run_old(self):
 		while not self.kill_received:
 			domain = self.jobs.get()
 
@@ -707,6 +711,28 @@ class DomainThread(threading.Thread):
 							domain['ssdeep-score'] = ssdeep.compare(self.ssdeep_orig, ssdeep_fuzz)
 
 			domain['domain-name'] = domain['domain-name'].encode().decode('idna')
+
+			self.jobs.task_done()
+
+	def run(self):
+		while not self.kill_received:
+			domain = self.jobs.get()
+
+			domain['domain-name'] = domain['domain-name'].encode('idna').decode()
+
+			ext = tldextract.extract(domain['domain-name'])
+			try:
+				domain['status'] = "success"
+				#res = self.es.search(index="domain_assets_v02", doc_type="doc", body={'query': {'wildcard': {'fqdn': "*{}*".format(ext.domain)}}})
+				res = self.es.get(index="domain_assets_v02", doc_type="doc", id=domain['domain-name'])
+				domain['fqdn_list'] = []
+
+				for sample in res['hits']['hits']:
+					domain['fqdn_list'].append(sample['_id'])
+
+			except Exception as e:
+				domain['status'] = "error"
+				domain['log'] = str(e)
 
 			self.jobs.task_done()
 
